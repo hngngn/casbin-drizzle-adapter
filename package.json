@@ -1,6 +1,6 @@
 {
     "name": "casbin-drizzle-adapter",
-    "version": "0.0.1",
+    "version": "1.0.0",
     "description": "Drizzle adapter for Casbin",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
