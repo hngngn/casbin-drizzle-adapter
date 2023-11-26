@@ -35,14 +35,26 @@ export const casbinRule = pgTable("casbin_rule", {
 })
 ```
 
-Here is a simple example:
+Here is a simple example with `PostgreSQL`:
 
 ```ts
 import casbin from "casbin"
 import { DrizzleAdapter } from "casbin-drizzle-adapter"
+import { Pool } from "pg"
+import { drizzle } from "drizzle-orm/node-postgres"
+import { casbinRule } from "./your-table-schema"
 
 async function main() {
-    const a = await DrizzleAdapter.newAdapter()
+    const pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+    })
+    const d = drizzle(pool, {
+        schema: {
+            casbinRule,
+        },
+    })
+
+    const a = await DrizzleAdapter.newAdapter(d, casbinRule)
     const e = await casbin.newEnforcer("examples/rbac_model.conf", a)
 
     // Check the permission.

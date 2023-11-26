@@ -10,5 +10,5 @@
         "noUncheckedIndexedAccess": true
     },
     "exclude": ["node_modules"],
-    "include": ["src/index.ts"]
+    "include": ["src/index.ts", "test", "tsup.config.ts"]
 }
