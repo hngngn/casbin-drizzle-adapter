@@ -1,0 +1,83 @@
+name: Release
+
+on:
+    push:
+        branches:
+            - main
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+
+        strategy:
+            matrix:
+                node-version: [18]
+
+        services:
+            postgres:
+                image: postgres:15-alpine
+                ports:
+                    - 5432:5432
+                env:
+                    POSTGRES_USER: casbin
+                    POSTGRES_PASSWORD: casbin
+                    POSTGRES_DB: casbin
+
+        steps:
+            - uses: actions/checkout@v3
+            - uses: pnpm/action-setup@v2
+              with:
+                  version: 8
+            - name: Use Node.js ${{ matrix.node-version }}
+              uses: actions/setup-node@v3
+              with:
+                  node-version: ${{ matrix.node-version }}
+                  cache: "pnpm"
+
+            - name: Install dependencies
+              run: pnpm i
+
+            - name: Run test
+              run: |
+                  export DATABASE_URL=postgres://casbin:casbin@localhost:5432/casbin?sslmode=disable
+                  pnpm push
+                  pnpm format
+                  pnpm lint
+                  pnpm test
+
+    release:
+        needs: test
+        runs-on: ubuntu-latest
+
+        strategy:
+            matrix:
+                node-version: [18]
+
+        steps:
+            - uses: actions/checkout@v3
+            - uses: pnpm/action-setup@v2
+              with:
+                  version: 8
+            - name: Use Node.js ${{ matrix.node-version }}
+              uses: actions/setup-node@v3
+              with:
+                  node-version: ${{ matrix.node-version }}
+                  cache: "pnpm"
+
+            - name: Install NPM Dependencies
+              run: pnpm install
+
+            - name: Build the package
+              run: pnpm build
+
+            - name: Create Version PR or Publish to NPM
+              id: changesets
+              uses: changesets/action@v1
+              with:
+                  commit: "chore(release): version packages"
+                  title: "chore(release): version packages"
+                  version: pnpm changeset version
+                  publish: pnpm changeset publish
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  NPM_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
