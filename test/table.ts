@@ -1,6 +1,6 @@
 import { pgTable, serial, varchar } from "drizzle-orm/pg-core"
 
-export const casbinRule = pgTable("casbin_rule", {
+export const casbinTable = pgTable("casbin_rule", {
     id: serial("id").primaryKey().notNull(),
     ptype: varchar("ptype", { length: 254 }),
     v0: varchar("v0", { length: 254 }),

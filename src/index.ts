@@ -1,21 +1,28 @@
-import type { Adapter, Model } from "casbin"
+import type { Model, UpdatableAdapter } from "casbin"
 import { Helper } from "casbin"
 import { eq, sql } from "drizzle-orm"
-import { type MySqlTable, type TableConfig as MySqlTableConfig } from "drizzle-orm/mysql-core"
+import type { MySqlTable, TableConfig as MySqlTableConfig } from "drizzle-orm/mysql-core"
 import type { MySql2Database } from "drizzle-orm/mysql2"
 import type { NodePgDatabase } from "drizzle-orm/node-postgres"
 import type { PgTable, TableConfig as PgTableConfig } from "drizzle-orm/pg-core"
+import type { SQLiteTable, TableConfig as SQLiteTableConfig } from "drizzle-orm/sqlite-core"
 import type { TCasinTable, TCasinTableCreateInput } from "./types"
 
 export class DrizzleAdapter<
     T extends NodePgDatabase<TSchema> | MySql2Database<TSchema>,
     TSchema extends Record<string, unknown>,
-> implements Adapter
+> implements UpdatableAdapter
 {
     #db: T
-    #schema: PgTable<PgTableConfig> | MySqlTable<MySqlTableConfig>
+    #schema: PgTable<PgTableConfig> | MySqlTable<MySqlTableConfig> | SQLiteTable<SQLiteTableConfig>
 
-    constructor(db: T, schema: PgTable<PgTableConfig>) {
+    constructor(
+        db: T,
+        schema:
+            | PgTable<PgTableConfig>
+            | MySqlTable<MySqlTableConfig>
+            | SQLiteTable<SQLiteTableConfig>,
+    ) {
         this.#db = db
         this.#schema = schema
     }
@@ -23,7 +30,13 @@ export class DrizzleAdapter<
     static newAdapter<
         T extends NodePgDatabase<TSchema> | MySql2Database<TSchema>,
         TSchema extends Record<string, unknown>,
-    >(db: T, schema: PgTable<PgTableConfig>) {
+    >(
+        db: T,
+        schema:
+            | PgTable<PgTableConfig>
+            | MySqlTable<MySqlTableConfig>
+            | SQLiteTable<SQLiteTableConfig>,
+    ) {
         return new DrizzleAdapter(db, schema)
     }
 
@@ -36,11 +49,16 @@ export class DrizzleAdapter<
     }
 
     async loadPolicy(model: Model): Promise<void> {
-        // @ts-expect-error
-        const lines = await this.#db.query.casbinRule.findMany()
+        let lines: TCasinTable[]
+        try {
+            // @ts-expect-error
+            lines = await this.#db.query.casbinTable.findMany()
 
-        for (const line of lines) {
-            this.#loadPolicyLine(line, model)
+            for (const line of lines) {
+                this.#loadPolicyLine(line, model)
+            }
+        } catch (error) {
+            throw new Error("table must named 'casbinTable'")
         }
     }
 
@@ -166,6 +184,35 @@ export class DrizzleAdapter<
                 eq(this.#schema.v4, line.v4),
                 // @ts-expect-error
                 eq(this.#schema.v5, line.v5),
+            )
+    }
+
+    async updatePolicy(
+        sec: string,
+        ptype: string,
+        oldRule: string[],
+        newRule: string[],
+    ): Promise<void> {
+        const oldLine = this.#savePolicyLine(ptype, oldRule)
+        const newLine = this.#savePolicyLine(ptype, newRule)
+
+        await this.#db
+            // @ts-expect-error
+            .update(this.#schema)
+            .set(newLine)
+            .where(
+                // @ts-expect-error
+                eq(this.#schema.v0, oldLine.v0),
+                // @ts-expect-error
+                eq(this.#schema.v1, oldLine.v1),
+                // @ts-expect-error
+                eq(this.#schema.v2, oldLine.v2),
+                // @ts-expect-error
+                eq(this.#schema.v3, oldLine.v3),
+                // @ts-expect-error
+                eq(this.#schema.v4, oldLine.v4),
+                // @ts-expect-error
+                eq(this.#schema.v5, oldLine.v5),
             )
     }
 }

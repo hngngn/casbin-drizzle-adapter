@@ -43,7 +43,7 @@ jobs:
                   pnpm push
                   pnpm format
                   pnpm lint
-                  pnpm test
+                  pnpm test run
 
     release:
         needs: test

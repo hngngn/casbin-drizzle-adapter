@@ -6,11 +6,10 @@
     "types": "dist/index.d.ts",
     "module": "dist/index.mjs",
     "scripts": {
-        "dev": "tsup --watch",
         "build": "tsup --minify",
         "format": "prettier -w \"src/**/*.ts\"",
         "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-        "test": "dotenv -- vitest run",
+        "test": "dotenv -- vitest",
         "push": "dotenv -- drizzle-kit push:pg",
         "release": "changeset version"
     },
