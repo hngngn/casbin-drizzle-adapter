@@ -23,7 +23,8 @@ Create table(PostgreSQL):
 ```sql
 import { pgTable, serial, varchar } from "drizzle-orm/pg-core"
 
-export const casbinRule = pgTable("casbin_rule", {
+-- Must be named casbinTable
+export const casbinTable = pgTable("casbin_rule", {
     id: serial("id").primaryKey().notNull(),
     ptype: varchar("ptype", { length: 254 }),
     v0: varchar("v0", { length: 254 }),
@@ -42,7 +43,7 @@ import casbin from "casbin"
 import { DrizzleAdapter } from "casbin-drizzle-adapter"
 import { Pool } from "pg"
 import { drizzle } from "drizzle-orm/node-postgres"
-import { casbinRule } from "./your-table-schema"
+import { casbinTable } from "./your-table-schema"
 
 async function main() {
     const pool = new Pool({
@@ -50,11 +51,11 @@ async function main() {
     })
     const d = drizzle(pool, {
         schema: {
-            casbinRule,
+            casbinTable,
         },
     })
 
-    const a = await DrizzleAdapter.newAdapter(d, casbinRule)
+    const a = await DrizzleAdapter.newAdapter(d, casbinTable)
     const e = await casbin.newEnforcer("examples/rbac_model.conf", a)
 
     // Check the permission.
