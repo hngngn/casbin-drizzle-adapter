@@ -1,5 +1,11 @@
 # casbin-drizzle-adapter
 
+## 1.1.1
+
+### Patch Changes
+
+-   38cd042: Update README
+
 ## 1.1.0
 
 ### Minor Changes
