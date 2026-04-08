@@ -38,7 +38,7 @@
         "casbin": "^5.28.0",
         "dotenv-cli": "^7.3.0",
         "drizzle-kit": "^0.20.4",
-        "drizzle-orm": "^0.29.0",
+        "drizzle-orm": "^0.45.2",
         "eslint": "^8.54.0",
         "pg": "^8.11.3",
         "prettier": "^3.1.0",
