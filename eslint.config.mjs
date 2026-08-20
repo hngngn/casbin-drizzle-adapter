@@ -14,6 +14,15 @@ export default [
     },
     js.configs.recommended,
     {
+        // Build scripts: plain ESM running on Node.
+        files: ["**/*.mjs"],
+        languageOptions: {
+            globals: {
+                ...globals.node,
+            },
+        },
+    },
+    {
         files: ["**/*.ts"],
         languageOptions: {
             parser: tsParser,

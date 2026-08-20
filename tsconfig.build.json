@@ -1,0 +1,15 @@
+{
+    // Declarations are emitted by `tsc`, not by tsup: tsup's dts pass forces
+    // `baseUrl` on the compiler (`baseUrl: compilerOptions.baseUrl || "."` in
+    // its rollup worker), and `baseUrl` is deprecated — TS 6 errors on it and
+    // TS 7 drops it. There is no tsconfig setting that stops the injection.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "declaration": true,
+        "emitDeclarationOnly": true,
+        "rootDir": "src",
+        "outDir": "dist"
+    },
+    // Only the published sources: tests must not land in dist.
+    "include": ["src"]
+}
