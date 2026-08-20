@@ -4,6 +4,9 @@ on:
     push:
         branches:
             - main
+    pull_request:
+        branches:
+            - main
 
 jobs:
     test:
@@ -22,6 +25,26 @@ jobs:
                     POSTGRES_USER: casbin
                     POSTGRES_PASSWORD: casbin
                     POSTGRES_DB: casbin
+                options: >-
+                    --health-cmd="pg_isready -U casbin"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=20
+
+            mysql:
+                image: mysql:8
+                ports:
+                    - 3306:3306
+                env:
+                    MYSQL_ROOT_PASSWORD: casbin
+                    MYSQL_DATABASE: casbin
+                # `mysqladmin ping` reports ready ~30s before the server will
+                # accept a query, so health-check with an actual query.
+                options: >-
+                    --health-cmd="mysql -uroot -pcasbin -e 'select 1' casbin"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=30
 
         steps:
             - uses: actions/checkout@v4
@@ -40,13 +63,17 @@ jobs:
             - name: Run test
               run: |
                   export DATABASE_URL=postgres://casbin:casbin@localhost:5432/casbin?sslmode=disable
+                  export MYSQL_URL=mysql://root:casbin@127.0.0.1:3306/casbin
                   pnpm push
-                  pnpm format
+                  pnpm format:check
                   pnpm lint
+                  pnpm typecheck
+                  pnpm build
                   pnpm test run
 
     release:
         needs: test
+        if: github.event_name == 'push'
         runs-on: ubuntu-latest
 
         strategy:
