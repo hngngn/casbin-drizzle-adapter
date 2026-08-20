@@ -1,13 +1,14 @@
 {
     "compilerOptions": {
-        "module": "CommonJS",
+        "module": "preserve",
         "target": "ES2022",
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
-        "moduleResolution": "Node",
-        "noUncheckedIndexedAccess": true
+        "noUncheckedIndexedAccess": true,
+        // tsup injects `baseUrl` when generating declarations; TS 6 errors on it without this.
+        "ignoreDeprecations": "6.0"
     },
     "exclude": ["node_modules"],
     "include": ["src/index.ts", "test", "tsup.config.ts"]
