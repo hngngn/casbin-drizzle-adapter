@@ -18,12 +18,16 @@ pnpm add casbin-drizzle-adapter
 
 ## Getting Started
 
+Note on SQLite: only drivers with asynchronous transactions (libsql, D1, ...) are
+supported. `better-sqlite3` runs transaction callbacks synchronously and would not
+await the adapter's writes.
+
 Create table(PostgreSQL):
 
-```sql
+```ts
 import { pgTable, serial, varchar } from "drizzle-orm/pg-core"
 
--- Must be named casbinTable
+// The table may be named anything; it must define ptype and v0..v5.
 export const casbinTable = pgTable("casbin_rule", {
     id: serial("id").primaryKey().notNull(),
     ptype: varchar("ptype", { length: 254 }),
@@ -49,13 +53,9 @@ async function main() {
     const pool = new Pool({
         connectionString: process.env.DATABASE_URL,
     })
-    const d = drizzle(pool, {
-        schema: {
-            casbinTable,
-        },
-    })
+    const d = drizzle(pool)
 
-    const a = await DrizzleAdapter.newAdapter(d, casbinTable)
+    const a = DrizzleAdapter.newAdapter(d, casbinTable)
     const e = await casbin.newEnforcer("examples/rbac_model.conf", a)
 
     // Check the permission.
