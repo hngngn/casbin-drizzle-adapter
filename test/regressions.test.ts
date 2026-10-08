@@ -4,7 +4,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres"
 import { pgTable, serial, varchar } from "drizzle-orm/pg-core"
 import { Pool } from "pg"
 import { afterAll, beforeEach, describe, expect, it } from "vitest"
-import { DrizzleAdapter } from "../src"
+import { DrizzleAdapter, type TCasbinSchema } from "../src"
 
 // A table of its own so this file cannot race test/adapter.test.ts.
 const regressionTable = pgTable("casbin_rule_regression", {
@@ -260,11 +260,29 @@ describe("addPolicy", () => {
 describe("constructor", () => {
     it("rejects a table missing casbin columns", () => {
         const bad = pgTable("bad_table", { id: serial("id").primaryKey() })
+        // The type rejects this table too; the runtime guard is what catches a
+        // JavaScript caller, and a caller who has cast the type away.
+        // @ts-expect-error -- table is missing ptype and v0..v5
         expect(() => DrizzleAdapter.newAdapter(db, bad)).toThrow(
             /"bad_table" is missing the casbin column\(s\): ptype, v0, v1, v2, v3, v4, v5/,
         )
     })
 })
+
+// Type-level regression: a NOT NULL policy column cannot round-trip a short
+// rule, so the schema type has to reject it before any query runs.
+const notNullTable = pgTable("not_null_table", {
+    ptype: varchar("ptype", { length: 254 }),
+    v0: varchar("v0", { length: 254 }).notNull(),
+    v1: varchar("v1", { length: 254 }),
+    v2: varchar("v2", { length: 254 }),
+    v3: varchar("v3", { length: 254 }),
+    v4: varchar("v4", { length: 254 }),
+    v5: varchar("v5", { length: 254 }),
+})
+// @ts-expect-error -- v0 is NOT NULL
+const _rejectsNotNullColumns: TCasbinSchema = notNullTable
+void _rejectsNotNullColumns
 
 describe("error categorization", () => {
     const stubAdapter = (thrown: unknown) => {

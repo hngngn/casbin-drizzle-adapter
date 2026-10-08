@@ -1,37 +1,74 @@
-import type { Model, UpdatableAdapter } from "casbin"
-import type { Column, SQL } from "drizzle-orm"
-import { and, eq, getTableColumns, getTableName, isNull } from "drizzle-orm"
-import type { MySqlTable, TableConfig as MySqlTableConfig } from "drizzle-orm/mysql-core"
-import type { MySql2Database } from "drizzle-orm/mysql2"
-import type { NodePgDatabase } from "drizzle-orm/node-postgres"
-import type { PgTable, TableConfig as PgTableConfig } from "drizzle-orm/pg-core"
+import type { BatchAdapter, FilteredAdapter, Model, UpdatableAdapter } from "casbin"
+import {
+    and,
+    eq,
+    getTableColumns,
+    getTableName,
+    isNull,
+    notInArray,
+    or,
+    type Column,
+    type SQL,
+} from "drizzle-orm"
+import type {
+    MySqlDatabase,
+    MySqlQueryResultHKT,
+    MySqlTable,
+    PreparedQueryHKTBase,
+    TableConfig as MySqlTableConfig,
+} from "drizzle-orm/mysql-core"
+import type {
+    PgDatabase,
+    PgQueryResultHKT,
+    PgTable,
+    TableConfig as PgTableConfig,
+} from "drizzle-orm/pg-core"
 import type {
     BaseSQLiteDatabase,
     SQLiteTable,
     TableConfig as SQLiteTableConfig,
 } from "drizzle-orm/sqlite-core"
-import type { TCasinTable, TCasinTableCreateInput } from "./types"
+import type {
+    TCasbinColumns,
+    TCasbinFilter,
+    TCasbinTable,
+    TCasbinTableCreateInput,
+} from "./types.js"
+
+export type { TCasbinFilter } from "./types.js"
 
 /** The policy value columns, in order. A rule may not be longer than this. */
-const POLICY_COLUMNS = ["v0", "v1", "v2", "v3", "v4", "v5"] as const
+export const POLICY_COLUMNS = ["v0", "v1", "v2", "v3", "v4", "v5"] as const
 
 /** Every column the adapter reads or writes. */
 const REQUIRED_COLUMNS = ["ptype", ...POLICY_COLUMNS] as const
 
 /** Postgres caps a statement at 65535 bind parameters; stay well inside it. */
-const INSERT_CHUNK_SIZE = 1000
-
-export type TCasbinSchema =
-    PgTable<PgTableConfig> | MySqlTable<MySqlTableConfig> | SQLiteTable<SQLiteTableConfig>
+const STATEMENT_CHUNK_SIZE = 1000
 
 /**
+ * Any drizzle table that carries the casbin columns. The intersection is what
+ * makes a wrong table a compile error rather than a constructor throw; the
+ * constructor still checks, because a JavaScript caller reaches it untyped.
+ */
+export type TCasbinSchema =
+    | (PgTable<PgTableConfig> & TCasbinColumns)
+    | (MySqlTable<MySqlTableConfig> & TCasbinColumns)
+    | (SQLiteTable<SQLiteTableConfig> & TCasbinColumns)
+
+/**
+ * Typed against drizzle's dialect base classes rather than a single driver, so
+ * every Postgres and MySQL driver is accepted: node-postgres, postgres.js, neon,
+ * vercel-postgres, PGlite, planetscale, ...
+ *
  * SQLite is only supported through drivers with asynchronous transactions
- * (libsql, D1, ...). `better-sqlite3` runs transaction callbacks synchronously
- * and would not await this adapter's writes.
+ * (libsql, D1, ...). `better-sqlite3` is `BaseSQLiteDatabase<"sync", ...>`: it
+ * runs transaction callbacks synchronously and would not await this adapter's
+ * writes, so the union excludes it on purpose.
  */
 export type TCasbinDatabase<TSchema extends Record<string, unknown>> =
-    | NodePgDatabase<TSchema>
-    | MySql2Database<TSchema>
+    | PgDatabase<PgQueryResultHKT, TSchema>
+    | MySqlDatabase<MySqlQueryResultHKT, PreparedQueryHKTBase, TSchema>
     | BaseSQLiteDatabase<"async", unknown, TSchema>
 
 /**
@@ -43,10 +80,18 @@ export type TCasbinDatabase<TSchema extends Record<string, unknown>> =
  * that the table really has the columns this shape assumes.
  */
 type TQueryRunner = {
-    select(): { from(table: TCasbinSchema): PromiseLike<TCasinTable[]> }
-    insert(table: TCasbinSchema): { values(values: TCasinTableCreateInput[]): PromiseLike<unknown> }
+    select(): {
+        from(table: TCasbinSchema): PromiseLike<TCasbinTable[]> & {
+            where(where: SQL | undefined): PromiseLike<TCasbinTable[]>
+        }
+    }
+    insert(table: TCasbinSchema): {
+        values(values: TCasbinTableCreateInput[]): PromiseLike<unknown>
+    }
     update(table: TCasbinSchema): {
-        set(values: TCasinTableCreateInput): { where(where: SQL | undefined): PromiseLike<unknown> }
+        set(values: TCasbinTableCreateInput): {
+            where(where: SQL | undefined): PromiseLike<unknown>
+        }
     }
     delete(table: TCasbinSchema): PromiseLike<unknown> & {
         where(where: SQL | undefined): PromiseLike<unknown>
@@ -57,10 +102,14 @@ type TQueryRunner = {
 export class DrizzleAdapter<
     T extends TCasbinDatabase<TSchema>,
     TSchema extends Record<string, unknown>,
-> implements UpdatableAdapter {
+>
+    implements UpdatableAdapter, BatchAdapter, FilteredAdapter
+{
     #db: TQueryRunner
     #schema: TCasbinSchema
     #columns: Record<string, Column>
+    /** Set by a filtered load, so `savePolicy` cannot write back a partial policy. */
+    #filtered = false
 
     constructor(db: T, schema: TCasbinSchema) {
         if (!db) {
@@ -345,7 +394,7 @@ export class DrizzleAdapter<
         return undefined
     }
 
-    #loadPolicyLine = (line: TCasinTable, model: Model): void => {
+    #loadPolicyLine = (line: TCasbinTable, model: Model): void => {
         const ptype = line.ptype
         if (!ptype) {
             throw new Error(`Invalid policy line: ptype is required but got ${ptype}`)
@@ -371,18 +420,7 @@ export class DrizzleAdapter<
         ast.policy.push(values.slice(0, length).map((value) => value ?? ""))
     }
 
-    async loadPolicy(model: Model): Promise<void> {
-        if (!model) {
-            throw new Error("Model is required for loading policy")
-        }
-
-        let lines: TCasinTable[]
-        try {
-            lines = await this.#db.select().from(this.#schema)
-        } catch (error) {
-            throw this.#categorizeError(error, "loading policy from database")
-        }
-
+    #applyLines = (lines: TCasbinTable[], model: Model): void => {
         try {
             for (const line of lines) {
                 this.#loadPolicyLine(line, model)
@@ -393,7 +431,117 @@ export class DrizzleAdapter<
         }
     }
 
-    #savePolicyLine = (ptype: string, rule: string[]): TCasinTableCreateInput => {
+    /**
+     * Reads every rule in the table.
+     *
+     * @deprecated Prefer {@link DrizzleAdapter.loadFilteredPolicy}, which pushes
+     * the filter down into SQL. This method issues an unbounded `SELECT` and
+     * holds the whole policy in memory, so a table shared by many tenants loads
+     * every tenant to enforce one. casbin's `Adapter` interface requires this
+     * method and `newEnforcer` calls it, so it stays supported and correct — the
+     * tag is guidance for large tables, not a removal notice.
+     */
+    async loadPolicy(model: Model): Promise<void> {
+        if (!model) {
+            throw new Error("Model is required for loading policy")
+        }
+
+        let lines: TCasbinTable[]
+        try {
+            lines = await this.#db.select().from(this.#schema)
+        } catch (error) {
+            throw this.#categorizeError(error, "loading policy from database")
+        }
+
+        this.#applyLines(lines, model)
+        this.#filtered = false
+    }
+
+    /**
+     * Reads only the rules the filter selects, as a single `SELECT ... WHERE`.
+     *
+     * A ptype the filter does not name is read in full, matching casbin's own
+     * filtered adapters. Note that a filter narrower than the model needs is not
+     * an error: the missing rules simply never load, and `enforce` reports a
+     * deny. See {@link TCasbinFilter} for the shape and a multi-tenant example.
+     */
+    async loadFilteredPolicy(model: Model, filter?: TCasbinFilter): Promise<void> {
+        if (!model) {
+            throw new Error("Model is required for loading policy")
+        }
+
+        const where = this.#filterCondition(filter)
+        if (!where) {
+            // Constrains nothing, so this is a full load — and a full load must
+            // not leave the adapter marked filtered, or savePolicy stays locked.
+            await this.loadPolicy(model)
+            return
+        }
+
+        let lines: TCasbinTable[]
+        try {
+            lines = await this.#db.select().from(this.#schema).where(where)
+        } catch (error) {
+            throw this.#categorizeError(error, "loading filtered policy from database")
+        }
+
+        this.#applyLines(lines, model)
+        this.#filtered = true
+    }
+
+    /** True when the loaded policy is a subset of the table. */
+    isFiltered(): boolean {
+        return this.#filtered
+    }
+
+    /**
+     * Renders a filter as, for example,
+     * `(ptype = 'p' AND v1 = 'tenant_a') OR (ptype = 'g' AND v2 = 'tenant_a')
+     * OR ptype NOT IN ('p', 'g')` — the last branch being the ptypes the filter
+     * says nothing about. Returns undefined when the filter constrains nothing.
+     */
+    #filterCondition = (filter: TCasbinFilter | undefined): SQL | undefined => {
+        if (!filter) {
+            return undefined
+        }
+
+        const named = Object.keys(filter).filter((ptype) => filter[ptype] !== undefined)
+        if (named.length === 0) {
+            return undefined
+        }
+
+        const branches: SQL[] = []
+        for (const ptype of named) {
+            const values = filter[ptype] ?? []
+            if (values.length > POLICY_COLUMNS.length) {
+                throw new Error(
+                    `Filter for ptype "${ptype}" has ${values.length} values but the casbin ` +
+                        `table stores at most ${POLICY_COLUMNS.length} ` +
+                        `(${POLICY_COLUMNS.join(", ")}): ${JSON.stringify(values)}`,
+                )
+            }
+
+            const conditions: SQL[] = [eq(this.#column("ptype"), ptype)]
+            values.forEach((value, index) => {
+                // casbin's wildcard: an empty string constrains nothing here.
+                if (value === "") {
+                    return
+                }
+                conditions.push(eq(this.#column(POLICY_COLUMNS[index]!), value))
+            })
+
+            const branch = and(...conditions)
+            if (branch) {
+                branches.push(branch)
+            }
+        }
+
+        branches.push(notInArray(this.#column("ptype"), named))
+
+        return or(...branches)
+    }
+
+    #savePolicyLine = (ptype: string, rule: string[]): TCasbinTableCreateInput => {
         if (rule.length > POLICY_COLUMNS.length) {
             throw new Error(
                 `Rule has ${rule.length} values but the casbin table stores at most ` +
@@ -402,7 +550,7 @@ export class DrizzleAdapter<
             )
         }
 
-        const line: TCasinTableCreateInput = { ptype }
+        const line: TCasbinTableCreateInput = { ptype }
         POLICY_COLUMNS.forEach((name, index) => {
             if (index < rule.length) {
                 line[name] = rule[index]
@@ -418,7 +566,7 @@ export class DrizzleAdapter<
      * that merely shares its prefix. `eq(column, null)` renders `column = NULL`,
      * which is never true in SQL, so absent columns need `IS NULL`.
      */
-    #matchLine = (line: TCasinTableCreateInput): SQL | undefined => {
+    #matchLine = (line: TCasbinTableCreateInput): SQL | undefined => {
         const conditions: SQL[] = [eq(this.#column("ptype"), line.ptype)]
 
         for (const name of POLICY_COLUMNS) {
@@ -437,10 +585,21 @@ export class DrizzleAdapter<
         if (!model) {
             throw new Error("Model is required for saving policy")
         }
+        if (this.#filtered) {
+            // savePolicy truncates the table. After a filtered load the model
+            // holds only the rules that filter matched, so writing it back would
+            // delete every rule outside the filter. casbin's enforcer refuses
+            // this too; the adapter refuses it as well for direct callers.
+            throw new Error(
+                "Cannot save a filtered policy: the model holds only the rules the last " +
+                    "filtered load read, and saving would delete every rule outside that " +
+                    "filter. Call loadPolicy() first.",
+            )
+        }
 
         // Build every row before touching the database. A malformed rule must
         // not leave the table truncated with the policy half-written.
-        const lines: TCasinTableCreateInput[] = []
+        const lines: TCasbinTableCreateInput[] = []
         for (const sec of ["p", "g"] as const) {
             // A model without a [role_definition] section has no "g" at all.
             const astMap = model.model.get(sec)
@@ -457,8 +616,8 @@ export class DrizzleAdapter<
         try {
             await this.#db.transaction(async (tx) => {
                 await tx.delete(this.#schema)
-                for (let i = 0; i < lines.length; i += INSERT_CHUNK_SIZE) {
-                    await tx.insert(this.#schema).values(lines.slice(i, i + INSERT_CHUNK_SIZE))
+                for (let i = 0; i < lines.length; i += STATEMENT_CHUNK_SIZE) {
+                    await tx.insert(this.#schema).values(lines.slice(i, i + STATEMENT_CHUNK_SIZE))
                 }
             })
         } catch (error) {
@@ -484,6 +643,43 @@ export class DrizzleAdapter<
         }
     }
 
+    /**
+     * Validates every rule before any of them is written, so a malformed rule in
+     * the middle of a batch cannot leave the table half-updated.
+     */
+    #savePolicyLines = (ptype: string, rules: string[][]): TCasbinTableCreateInput[] => {
+        if (!ptype) {
+            throw new Error("Policy type (ptype) is required")
+        }
+        if (!Array.isArray(rules)) {
+            throw new Error("Rules must be an array")
+        }
+
+        return rules.map((rule) => {
+            if (!Array.isArray(rule)) {
+                throw new Error("Rule must be an array")
+            }
+            return this.#savePolicyLine(ptype, rule)
+        })
+    }
+
+    async addPolicies(sec: string, ptype: string, rules: string[][]): Promise<void> {
+        const lines = this.#savePolicyLines(ptype, rules)
+        if (lines.length === 0) {
+            return
+        }
+
+        try {
+            await this.#db.transaction(async (tx) => {
+                for (let i = 0; i < lines.length; i += STATEMENT_CHUNK_SIZE) {
+                    await tx.insert(this.#schema).values(lines.slice(i, i + STATEMENT_CHUNK_SIZE))
+                }
+            })
+        } catch (error) {
+            throw this.#categorizeError(error, "adding policies")
+        }
+    }
+
     async removePolicy(sec: string, ptype: string, rule: string[]): Promise<void> {
         if (!ptype) {
             throw new Error("Policy type (ptype) is required")
@@ -497,6 +693,29 @@ export class DrizzleAdapter<
             await this.#db.delete(this.#schema).where(this.#matchLine(line))
         } catch (error) {
             throw this.#categorizeError(error, "removing policy")
+        }
+    }
+
+    async removePolicies(sec: string, ptype: string, rules: string[][]): Promise<void> {
+        const lines = this.#savePolicyLines(ptype, rules)
+        // An `or()` over nothing renders no WHERE clause at all, and the delete
+        // would take the whole table with it. Never issue the statement empty.
+        const conditions = lines
+            .map((line) => this.#matchLine(line))
+            .filter((condition): condition is SQL => condition !== undefined)
+        if (conditions.length === 0) {
+            return
+        }
+
+        try {
+            await this.#db.transaction(async (tx) => {
+                for (let i = 0; i < conditions.length; i += STATEMENT_CHUNK_SIZE) {
+                    const chunk = conditions.slice(i, i + STATEMENT_CHUNK_SIZE)
+                    await tx.delete(this.#schema).where(or(...chunk))
+                }
+            })
+        } catch (error) {
+            throw this.#categorizeError(error, "removing policies")
         }
     }
 
