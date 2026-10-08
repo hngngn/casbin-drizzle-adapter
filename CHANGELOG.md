@@ -1,5 +1,82 @@
 # casbin-drizzle-adapter
 
+## 1.3.0
+
+### Minor Changes
+
+- d2b04d2: Implement `BatchAdapter` and `FilteredAdapter`, and widen driver support.
+
+    - `addPolicies` and `removePolicies` are implemented, so `e.addPolicies()`,
+      `e.addPoliciesEx()` and `e.removePolicies()` work. They previously threw
+      `cannot to save policy, the adapter does not implement the BatchAdapter`. Each
+      validates every rule before writing, runs in one transaction, and chunks its
+      statements. An empty batch is a no-op — in particular `removePolicies(sec,
+ptype, [])` cannot render a `DELETE` without a `WHERE` clause.
+    - `loadFilteredPolicy` and `isFiltered` are implemented, so `e.loadFilteredPolicy()`
+      works instead of throwing. The filter is pushed into SQL rather than applied in
+      memory: rules are selected per ptype by position, `""` matches anything, and a
+      ptype the filter does not name is read in full. `savePolicy` now refuses to run
+      after a filtered load, which would otherwise delete every rule outside the filter.
+    - `loadPolicy` carries an `@deprecated` tag pointing at `loadFilteredPolicy`. It
+      remains supported and correct — casbin's `Adapter` interface requires it and
+      `newEnforcer` calls it — but it reads the whole table into memory.
+    - Postgres and MySQL are typed against drizzle's dialect base classes instead of
+      `NodePgDatabase` and `MySql2Database`, so postgres.js, neon, vercel-postgres,
+      PGlite and planetscale are accepted. `better-sqlite3` is still excluded: it runs
+      transaction callbacks synchronously and would not await the adapter's writes.
+    - New subpath exports `casbin-drizzle-adapter/pg`, `/mysql` and `/sqlite` export
+      `pgCasbinTable`, `mysqlCasbinTable` and `sqliteCasbinTable`, which build a
+      correctly shaped table and index `(ptype, v0, v1)`. They are separate entry
+      points so a Postgres user does not load the MySQL and SQLite dialect code.
+    - The package now declares an `exports` map and `"sideEffects": false`. Deep
+      imports into `casbin-drizzle-adapter/dist/*` no longer resolve; use the package
+      entry or one of the subpaths.
+    - MySQL and SQLite are now covered by tests rather than types alone, and a smoke
+      test loads the built package through every entry point in both module formats.
+    - `casbin` and `drizzle-orm` are declared as peer dependencies. They are required
+      at runtime but were listed nowhere, so installing the package pulled in neither.
+
+- d2b04d2: Make the table types catch a wrong casbin table at compile time.
+
+    - `TCasbinSchema` now requires the table to expose `ptype` and `v0..v5`. Passing a
+      table without them was already rejected by the constructor at runtime; it is now
+      a type error, and the message names the missing columns.
+    - The `v0..v5` columns must be nullable text. A NOT NULL policy column cannot store
+      a rule shorter than six values, and `updatePolicy` clears unused columns by
+      writing NULL, so such a table failed on its first short rule. It no longer
+      compiles. `ptype` is written on every row and may stay NOT NULL.
+    - The row types no longer claim an `id` column. The adapter never reads or writes
+      one, so a table without `id` is typed honestly, and `ptype` is now required
+      rather than optional on the value the adapter writes.
+    - The row and column types are derived from a single list of policy columns, so
+      they cannot drift from the columns the adapter actually touches.
+
+    Only the property keys are constrained, never the SQL names: the table and each of
+    its columns may still be named anything in the database.
+
+### Patch Changes
+
+- d2b04d2: Emit type declarations with `tsc` instead of tsup's dts pass.
+
+    tsup forces `baseUrl` onto the compiler when it generates declarations
+    (`baseUrl: compilerOptions.baseUrl || "."`, in its rollup worker). `baseUrl` is
+    deprecated: TypeScript 6 errors on it and TypeScript 7 removes it, so `pnpm build`
+    failed outright on TS 6 with `TS5101`. No tsconfig setting prevents the injection,
+    because tsup overrides whatever the tsconfig says. The previous workaround —
+    `"ignoreDeprecations": "6.0"` in `tsconfig.json` — silences the error for exactly
+    one major version and stops being accepted on the next.
+
+    - `tsup` now builds JavaScript only; `tsc -p tsconfig.build.json` emits the
+      declarations, and `scripts/copy-declarations.mjs` writes the `.d.mts` twin each
+      ESM entry needs. A `.d.ts` in a `"type": "commonjs"` package is read as
+      CommonJS, which would type the `.mjs` output as CommonJS for consumers.
+    - Declarations are no longer bundled into one file per entry, so `dist/types.d.ts`
+      now ships alongside them. Both are covered by the existing `"files": ["dist"]`.
+    - The two relative imports in `src` are written with an explicit `.js` extension.
+      Rolled-up declarations had no relative specifiers at all; emitted ones do, and
+      an extensionless specifier is an error for consumers on `node16`/`nodenext`
+      module resolution who do not set `skipLibCheck`.
+
 ## 1.2.0
 
 ### Minor Changes
